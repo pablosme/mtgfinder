@@ -1,0 +1,264 @@
+package com.pelia.mtgfinder.service;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.pelia.mtgfinder.dto.CardSearchResponse;
+import com.pelia.mtgfinder.model.ActiveCard;
+import com.pelia.mtgfinder.model.CardFace;
+import com.pelia.mtgfinder.model.CardId;
+import com.pelia.mtgfinder.repository.ActiveCardRepository;
+import com.pelia.mtgfinder.repository.ActiveCardRepository.VectorMatch;
+import com.pelia.mtgfinder.repository.CardFaceRepository;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+@Service
+@Transactional(readOnly = true)
+public class CardSearchService {
+
+    private final ActiveCardRepository activeCardRepository;
+    private final CardFaceRepository cardFaceRepository;
+    private final ObjectMapper objectMapper;
+    private final EmbeddingModel embeddingModel;
+    private final int vectorSearchLimit;
+
+    public CardSearchService(
+            ActiveCardRepository activeCardRepository,
+            CardFaceRepository cardFaceRepository,
+            ObjectMapper objectMapper,
+            EmbeddingModel embeddingModel,
+            @Value("${com.pelia.mtgfinder.vector-search-limit:10}") int vectorSearchLimit) {
+        this.activeCardRepository = activeCardRepository;
+        this.cardFaceRepository = cardFaceRepository;
+        this.objectMapper = objectMapper;
+        this.embeddingModel = embeddingModel;
+        this.vectorSearchLimit = vectorSearchLimit;
+    }
+
+    public CardSearchResponse searchByName(String name) {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Name must not be blank");
+        }
+
+        String query = name.strip();
+        List<ActiveCard> matchingCards = activeCardRepository
+                .searchByNameIncludingFacesAndVariations(query);
+
+        return toSearchResponse(query, matchingCards, Map.of());
+    }
+
+    public CardSearchResponse searchByPrompt(String prompt) {
+        float[] promptEmbedding = embeddingModel.embed(prompt);
+        List<VectorMatch> matches = activeCardRepository.searchByEmbedding(
+                Arrays.toString(promptEmbedding), vectorSearchLimit);
+
+        List<CardId> matchingIds = matches.stream()
+                .map(match -> new CardId(match.getImportId(), match.getCardId()))
+                .toList();
+        Map<CardId, ActiveCard> cardsById = activeCardRepository.findAllById(matchingIds).stream()
+                .collect(Collectors.toMap(ActiveCard::getId, card -> card));
+        List<ActiveCard> matchingCards = matchingIds.stream()
+                .map(cardsById::get)
+                .toList();
+        Map<CardId, Double> similarityScores = matches.stream()
+                .collect(Collectors.toMap(
+                        match -> new CardId(match.getImportId(), match.getCardId()),
+                        VectorMatch::getSimilarityScore));
+
+        return toSearchResponse(prompt, matchingCards, similarityScores);
+    }
+
+    private CardSearchResponse toSearchResponse(
+            String query,
+            List<ActiveCard> matchingCards,
+            Map<CardId, Double> similarityScores) {
+
+        if (matchingCards.isEmpty()) {
+            return new CardSearchResponse(0, query, List.of());
+        }
+
+        Set<UUID> matchingCardIds = matchingCards.stream()
+                .map(card -> card.getId().getId())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Map<CardId, List<CardFace>> facesByCard = cardFaceRepository
+                .findForActiveCardsByCardIds(matchingCardIds)
+                .stream()
+                .collect(Collectors.groupingBy(
+                        face -> new CardId(face.getImportId(), face.getCardId()),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        Map<String, List<ActiveCard>> cardsByIdentity = matchingCards.stream()
+                .collect(Collectors.groupingBy(
+                        card -> identityKey(card, facesByCard),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        List<CardSearchResponse.OracleCard> data = cardsByIdentity.values().stream()
+                .map(cards -> toOracleCard(cards, facesByCard, similarityScores))
+                .toList();
+
+        return new CardSearchResponse(data.size(), query, data);
+    }
+
+    private String identityKey(ActiveCard card, Map<CardId, List<CardFace>> facesByCard) {
+        if (card.getOracleId() != null) {
+            return "oracle:" + card.getOracleId();
+        }
+
+        String faceOracleIds = facesByCard.getOrDefault(card.getId(), List.of()).stream()
+                .map(CardFace::getOracleId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .sorted()
+                .map(UUID::toString)
+                .collect(Collectors.joining(","));
+
+        return faceOracleIds.isEmpty()
+                ? "card:" + card.getId().getId()
+                : "faces:" + faceOracleIds;
+    }
+
+    private CardSearchResponse.OracleCard toOracleCard(
+            List<ActiveCard> cards,
+            Map<CardId, List<CardFace>> facesByCard,
+            Map<CardId, Double> similarityScores) {
+        List<ActiveCard> uniquePrints = new ArrayList<>(cards.stream()
+                .collect(Collectors.toMap(
+                        card -> card.getId().getId(),
+                        card -> card,
+                        (first, ignored) -> first,
+                        LinkedHashMap::new))
+                .values());
+
+        ActiveCard representative = uniquePrints.getFirst();
+        List<CardFace> representativeFaces = facesByCard.getOrDefault(representative.getId(), List.of());
+
+        List<CardSearchResponse.CardFace> faces = representativeFaces.stream()
+                .map(this::toCardFace)
+                .toList();
+
+        List<CardSearchResponse.CardPrint> prints = uniquePrints.stream()
+                .map(card -> toCardPrint(card, facesByCard.getOrDefault(card.getId(), List.of())))
+                .toList();
+
+        return new CardSearchResponse.OracleCard(
+                representative.getOracleId(),
+                representative.getName(),
+                representative.getLayout(),
+                manaCost(representative, representativeFaces),
+                representative.getCmc(),
+                representative.getTypeLine(),
+                representative.getOracleText(),
+                colors(representative, representativeFaces),
+                toList(representative.getColorIdentity()),
+                toList(representative.getKeywords()),
+                toJsonNode(representative.getLegalities()),
+                similarityScores.get(representative.getId()),
+                faces,
+                prints);
+    }
+
+    private CardSearchResponse.CardFace toCardFace(CardFace face) {
+        return new CardSearchResponse.CardFace(
+                face.getFaceIndex(),
+                face.getName(),
+                face.getManaCost(),
+                face.getTypeLine(),
+                face.getOracleText(),
+                toList(face.getColors()),
+                face.getPower(),
+                face.getToughness(),
+                face.getLoyalty());
+    }
+
+    private CardSearchResponse.CardPrint toCardPrint(ActiveCard card, List<CardFace> faces) {
+        String rarity = card.getRarity() == null
+                ? null
+                : card.getRarity().name().toLowerCase(Locale.ROOT);
+
+        return new CardSearchResponse.CardPrint(
+                card.getId().getId(),
+                card.getSetCode(),
+                card.getSetName(),
+                card.getCollectorNumber(),
+                rarity,
+                card.getFlavorText(),
+                card.getArtist(),
+                card.getReleasedAt(),
+                imageUris(card, faces),
+                toJsonNode(card.getPrices()),
+                toJsonNode(card.getRelatedUris()));
+    }
+
+    private String manaCost(ActiveCard card, List<CardFace> faces) {
+        if (card.getManaCost() != null) {
+            return card.getManaCost();
+        }
+
+        String joinedManaCosts = faces.stream()
+                .map(CardFace::getManaCost)
+                .filter(value -> value != null && !value.isBlank())
+                .collect(Collectors.joining(" // "));
+        return joinedManaCosts.isEmpty() ? null : joinedManaCosts;
+    }
+
+    private List<String> colors(ActiveCard card, List<CardFace> faces) {
+        if (card.getColors() != null) {
+            return toList(card.getColors());
+        }
+
+        Set<String> colors = new LinkedHashSet<>();
+        faces.stream()
+                .map(CardFace::getColors)
+                .filter(values -> values != null)
+                .forEach(values -> colors.addAll(Arrays.asList(values)));
+        return new ArrayList<>(colors);
+    }
+
+    private Object imageUris(ActiveCard card, List<CardFace> faces) {
+        if (card.getImageUris() != null) {
+            return toJsonNode(card.getImageUris());
+        }
+
+        Map<String, Object> imageUris = new LinkedHashMap<>();
+        for (CardFace face : faces) {
+            if (face.getImageUris() == null) {
+                continue;
+            }
+
+            String key = switch (face.getFaceIndex()) {
+                case 0 -> "front";
+                case 1 -> "back";
+                default -> "face_" + face.getFaceIndex();
+            };
+            imageUris.put(key, toJsonNode(face.getImageUris()));
+        }
+        return imageUris.isEmpty() ? null : imageUris;
+    }
+
+    private List<String> toList(String[] values) {
+        return values == null ? null : List.copyOf(Arrays.asList(values));
+    }
+
+    private JsonNode toJsonNode(JsonNode value) {
+        return value == null ? null : objectMapper.readTree(value.toString());
+    }
+
+}
