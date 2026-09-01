@@ -29,6 +29,15 @@ public class CardController {
         return cardSearchService.searchByName(name);
     }
 
+    @GetMapping("/fuzzy")
+    public CardSearchResponse searchByFuzzyName(@RequestParam String name) {
+        if (name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Name must not be blank");
+        }
+
+        return cardSearchService.searchByFuzzyName(name);
+    }
+
     @GetMapping("/vector")
     public CardSearchResponse searchByPrompt(@RequestParam String prompt) {
         return cardSearchService.searchByPrompt(prompt);

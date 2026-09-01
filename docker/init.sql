@@ -1,6 +1,7 @@
 -- 1. Extensões
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- 2. Controle de Versão / Ingestão
 CREATE TABLE IF NOT EXISTS bulk_imports (
@@ -149,7 +150,14 @@ CREATE INDEX IF NOT EXISTS idx_cards_color_identity_gin ON cards USING GIN(color
 CREATE INDEX IF NOT EXISTS idx_cards_keywords_gin ON cards USING GIN(keywords);
 CREATE INDEX IF NOT EXISTS idx_cards_legalities_gin ON cards USING GIN(legalities);
 
--- 3. Índice HNSW para Busca Vetorial
+-- 3. Índices GIN para busca aproximada por nome
+CREATE INDEX IF NOT EXISTS idx_cards_name_trgm
+ON cards USING GIN (lower(name) gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_card_faces_name_trgm
+ON card_faces USING GIN (lower(name) gin_trgm_ops);
+
+-- 4. Índice HNSW para Busca Vetorial
 -- HNSW aceita no máximo 2.000 dimensões para vector e 4.000 para halfvec.
 -- A coluna permanece em precisão completa; somente o índice usa meia precisão.
 CREATE INDEX IF NOT EXISTS idx_cards_embedding_hnsw 

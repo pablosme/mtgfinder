@@ -22,20 +22,14 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             """;
 
     private final byte[] expectedApiKey;
-    private final String apiKeyHeader;
 
     public ApiKeyAuthenticationFilter(
-            @Value("${com.pelia.mtgfinder.api-key}") String apiKey,
-            @Value("${com.pelia.mtgfinder.api-key-header:X-API-Key}") String apiKeyHeader) {
+            @Value("${com.pelia.mtgfinder.api-key}") String apiKey) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException("The API key must not be blank");
         }
-        if (apiKeyHeader == null || apiKeyHeader.isBlank()) {
-            throw new IllegalArgumentException("The API key header must not be blank");
-        }
 
         this.expectedApiKey = apiKey.getBytes(StandardCharsets.UTF_8);
-        this.apiKeyHeader = apiKeyHeader;
     }
 
     @Override
@@ -43,7 +37,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             HttpServletRequest request,
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
-        String providedApiKey = request.getHeader(apiKeyHeader);
+        String providedApiKey = request.getHeader("X-API-Key");
 
         if (!isValid(providedApiKey)) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);

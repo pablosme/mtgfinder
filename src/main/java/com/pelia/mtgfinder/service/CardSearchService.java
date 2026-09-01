@@ -21,6 +21,7 @@ import com.pelia.mtgfinder.model.ActiveCard;
 import com.pelia.mtgfinder.model.CardFace;
 import com.pelia.mtgfinder.model.CardId;
 import com.pelia.mtgfinder.repository.ActiveCardRepository;
+import com.pelia.mtgfinder.repository.ActiveCardRepository.FuzzyMatch;
 import com.pelia.mtgfinder.repository.ActiveCardRepository.VectorMatch;
 import com.pelia.mtgfinder.repository.CardFaceRepository;
 
@@ -36,18 +37,25 @@ public class CardSearchService {
     private final ObjectMapper objectMapper;
     private final EmbeddingModel embeddingModel;
     private final int vectorSearchLimit;
+    private final double fuzzySearchThreshold;
 
     public CardSearchService(
             ActiveCardRepository activeCardRepository,
             CardFaceRepository cardFaceRepository,
             ObjectMapper objectMapper,
             EmbeddingModel embeddingModel,
-            @Value("${com.pelia.mtgfinder.vector-search-limit:10}") int vectorSearchLimit) {
+            @Value("${com.pelia.mtgfinder.vector-search-limit:10}") int vectorSearchLimit,
+            @Value("${com.pelia.mtgfinder.fuzzy-search-threshold:0.35}") double fuzzySearchThreshold) {
+        if (fuzzySearchThreshold < 0.3 || fuzzySearchThreshold > 1) {
+            throw new IllegalArgumentException("Fuzzy search threshold must be between 0.3 and 1");
+        }
+
         this.activeCardRepository = activeCardRepository;
         this.cardFaceRepository = cardFaceRepository;
         this.objectMapper = objectMapper;
         this.embeddingModel = embeddingModel;
         this.vectorSearchLimit = vectorSearchLimit;
+        this.fuzzySearchThreshold = fuzzySearchThreshold;
     }
 
     public CardSearchResponse searchByName(String name) {
@@ -60,6 +68,32 @@ public class CardSearchService {
                 .searchByNameIncludingFacesAndVariations(query);
 
         return toSearchResponse(query, matchingCards, Map.of());
+    }
+
+    public CardSearchResponse searchByFuzzyName(String name) {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Name must not be blank");
+        }
+
+        String query = name.strip();
+        List<FuzzyMatch> matches = activeCardRepository.searchByFuzzyName(
+                query, fuzzySearchThreshold);
+
+        List<CardId> matchingIds = matches.stream()
+                .map(match -> new CardId(match.getImportId(), match.getCardId()))
+                .toList();
+        Map<CardId, ActiveCard> cardsById = activeCardRepository.findAllById(matchingIds).stream()
+                .collect(Collectors.toMap(ActiveCard::getId, card -> card));
+        List<ActiveCard> matchingCards = matchingIds.stream()
+                .map(cardsById::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        Map<CardId, Double> similarityScores = matches.stream()
+                .collect(Collectors.toMap(
+                        match -> new CardId(match.getImportId(), match.getCardId()),
+                        FuzzyMatch::getSimilarityScore));
+
+        return toSearchResponse(query, matchingCards, similarityScores);
     }
 
     public CardSearchResponse searchByPrompt(String prompt) {
