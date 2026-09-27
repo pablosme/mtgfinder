@@ -1,54 +1,45 @@
 package com.pelia.mtgfinder.service;
 
 import java.util.List;
-import java.util.UUID;
 
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import com.pelia.mtgfinder.dto.EmbeddingResult;
 import com.pelia.mtgfinder.model.Card;
 import com.pelia.mtgfinder.repository.CardRepository;
 
 @Service
 public class EmbeddingService {
 	private final EmbeddingModel embeddingModel;
-	private final BulkImportService bulkImportService;
 	private final CardRepository cardRepository;
-	private final int maxEstimatedTokens;
+	private final int batchSize;
 	private final int embeddingDimensions;
 
 	public EmbeddingService(
 			EmbeddingModel embeddingModel,
-			BulkImportService bulkImportService,
 			CardRepository cardRepository,
-			@Value("${com.pelia.mtgfinder.embedding-max-tokens:8000}") int maxEstimatedTokens,
+			@Value("${com.pelia.mtgfinder.embedding-batch-size:32}") int batchSize,
 			@Value("${spring.ai.vectorstore.pgvector.dimensions}") int embeddingDimensions) {
-		if (maxEstimatedTokens <= 0) {
-			throw new IllegalArgumentException("Embedding maximum estimated tokens must be greater than zero");
+		if (batchSize <= 0) {
+			throw new IllegalArgumentException("Embedding batch size must be greater than zero");
 		}
 		if (embeddingDimensions <= 0) {
 			throw new IllegalArgumentException("Embedding dimensions must be greater than zero");
 		}
 
 		this.embeddingModel = embeddingModel;
-		this.bulkImportService = bulkImportService;
 		this.cardRepository = cardRepository;
-		this.maxEstimatedTokens = maxEstimatedTokens;
+		this.batchSize = batchSize;
 		this.embeddingDimensions = embeddingDimensions;
 	}
 
-	public EmbeddingResult embedImport(UUID importId) {
-		if (importId == null) {
-			throw new IllegalArgumentException("Import ID must not be null");
-		}
-
-		bulkImportService.findById(importId);
-
+	public EmbeddingResult embedPendingCards() {
 		int embeddedCards = 0;
 		while (true) {
-			List<Card> cards = cardRepository.findPendingEmbeddingsByImportId(
-					importId, maxEstimatedTokens);
+			// Fetch one representative for each pending card/language pair.
+			List<Card> cards = cardRepository.findPendingEmbeddings(batchSize);
 			if (cards.isEmpty()) {
 				break;
 			}
@@ -56,10 +47,14 @@ public class EmbeddingService {
 			List<String> contexts = cards.stream()
 					.map(this::contextText)
 					.toList();
-			validateEstimatedTokens(cards, contexts);
+
+			// Generate embeddings for the batch of cards
 			List<float[]> embeddings = embeddingModel.embed(contexts);
 
+			// Validate the embeddings returned by the model
 			validateEmbeddings(cards.size(), embeddings);
+
+			// Associate the embeddings with their corresponding cards
 			for (int index = 0; index < cards.size(); index++) {
 				cards.get(index).setEmbedding(embeddings.get(index));
 			}
@@ -68,7 +63,7 @@ public class EmbeddingService {
 			embeddedCards += cards.size();
 		}
 
-		return new EmbeddingResult(importId, embeddedCards);
+		return new EmbeddingResult(embeddedCards);
 	}
 
 	private String contextText(Card card) {
@@ -76,38 +71,9 @@ public class EmbeddingService {
 		if (contextText == null || contextText.isBlank()) {
 			throw new IllegalStateException(
 					"Card %s from import %s does not have context text"
-							.formatted(card.getId().getId(), card.getId().getImportId()));
+							.formatted(card.getId(), card.getImportId()));
 		}
 		return contextText;
-	}
-
-	private void validateEstimatedTokens(List<Card> cards, List<String> contexts) {
-		long estimatedTokens = contexts.stream()
-				.mapToLong(this::estimateTokens)
-				.sum();
-		if (estimatedTokens <= maxEstimatedTokens) {
-			return;
-		}
-
-		if (cards.size() == 1) {
-			Card card = cards.getFirst();
-			throw new IllegalStateException(
-					"Card %s from import %s is estimated at %d tokens; configured maximum is %d"
-							.formatted(
-									card.getId().getId(),
-									card.getId().getImportId(),
-									estimatedTokens,
-									maxEstimatedTokens));
-		}
-
-		throw new IllegalStateException(
-				"Embedding batch is estimated at %d tokens; configured maximum is %d"
-						.formatted(estimatedTokens, maxEstimatedTokens));
-	}
-
-	int estimateTokens(String contextText) {
-		int words = contextText.strip().split("\\s+").length;
-		return (int) Math.ceil(words * 1.35d);
 	}
 
 	private void validateEmbeddings(int expectedCount, List<float[]> embeddings) {
@@ -125,8 +91,5 @@ public class EmbeddingService {
 								.formatted(actualDimensions, embeddingDimensions));
 			}
 		}
-	}
-
-	public record EmbeddingResult(UUID importId, int embeddedCards) {
 	}
 }

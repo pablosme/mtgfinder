@@ -19,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 import com.pelia.mtgfinder.dto.CardSearchResponse;
 import com.pelia.mtgfinder.model.ActiveCard;
 import com.pelia.mtgfinder.model.CardFace;
-import com.pelia.mtgfinder.model.CardId;
 import com.pelia.mtgfinder.repository.ActiveCardRepository;
 import com.pelia.mtgfinder.repository.ActiveCardRepository.FuzzyMatch;
 import com.pelia.mtgfinder.repository.ActiveCardRepository.VectorMatch;
@@ -79,18 +78,18 @@ public class CardSearchService {
         List<FuzzyMatch> matches = activeCardRepository.searchByFuzzyName(
                 query, fuzzySearchThreshold);
 
-        List<CardId> matchingIds = matches.stream()
-                .map(match -> new CardId(match.getImportId(), match.getCardId()))
+        List<UUID> matchingIds = matches.stream()
+                .map(FuzzyMatch::getCardId)
                 .toList();
-        Map<CardId, ActiveCard> cardsById = activeCardRepository.findAllById(matchingIds).stream()
+        Map<UUID, ActiveCard> cardsById = activeCardRepository.findAllById(matchingIds).stream()
                 .collect(Collectors.toMap(ActiveCard::getId, card -> card));
         List<ActiveCard> matchingCards = matchingIds.stream()
                 .map(cardsById::get)
                 .filter(java.util.Objects::nonNull)
                 .toList();
-        Map<CardId, Double> similarityScores = matches.stream()
+        Map<UUID, Double> similarityScores = matches.stream()
                 .collect(Collectors.toMap(
-                        match -> new CardId(match.getImportId(), match.getCardId()),
+                        FuzzyMatch::getCardId,
                         FuzzyMatch::getSimilarityScore));
 
         return toSearchResponse(query, matchingCards, similarityScores);
@@ -98,20 +97,21 @@ public class CardSearchService {
 
     public CardSearchResponse searchByPrompt(String prompt) {
         float[] promptEmbedding = embeddingModel.embed(prompt);
+        System.out.println("Prompt embedding: " + Arrays.toString(promptEmbedding));
         List<VectorMatch> matches = activeCardRepository.searchByEmbedding(
                 Arrays.toString(promptEmbedding), vectorSearchLimit);
 
-        List<CardId> matchingIds = matches.stream()
-                .map(match -> new CardId(match.getImportId(), match.getCardId()))
+        List<UUID> matchingIds = matches.stream()
+                .map(VectorMatch::getCardId)
                 .toList();
-        Map<CardId, ActiveCard> cardsById = activeCardRepository.findAllById(matchingIds).stream()
+        Map<UUID, ActiveCard> cardsById = activeCardRepository.findAllById(matchingIds).stream()
                 .collect(Collectors.toMap(ActiveCard::getId, card -> card));
         List<ActiveCard> matchingCards = matchingIds.stream()
                 .map(cardsById::get)
                 .toList();
-        Map<CardId, Double> similarityScores = matches.stream()
+        Map<UUID, Double> similarityScores = matches.stream()
                 .collect(Collectors.toMap(
-                        match -> new CardId(match.getImportId(), match.getCardId()),
+                        VectorMatch::getCardId,
                         VectorMatch::getSimilarityScore));
 
         return toSearchResponse(prompt, matchingCards, similarityScores);
@@ -120,21 +120,21 @@ public class CardSearchService {
     private CardSearchResponse toSearchResponse(
             String query,
             List<ActiveCard> matchingCards,
-            Map<CardId, Double> similarityScores) {
+            Map<UUID, Double> similarityScores) {
 
         if (matchingCards.isEmpty()) {
             return new CardSearchResponse(0, query, List.of());
         }
 
         Set<UUID> matchingCardIds = matchingCards.stream()
-                .map(card -> card.getId().getId())
+                .map(ActiveCard::getId)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-        Map<CardId, List<CardFace>> facesByCard = cardFaceRepository
+        Map<UUID, List<CardFace>> facesByCard = cardFaceRepository
                 .findForActiveCardsByCardIds(matchingCardIds)
                 .stream()
                 .collect(Collectors.groupingBy(
-                        face -> new CardId(face.getImportId(), face.getCardId()),
+                        CardFace::getCardId,
                         LinkedHashMap::new,
                         Collectors.toList()));
 
@@ -151,7 +151,7 @@ public class CardSearchService {
         return new CardSearchResponse(data.size(), query, data);
     }
 
-    private String identityKey(ActiveCard card, Map<CardId, List<CardFace>> facesByCard) {
+    private String identityKey(ActiveCard card, Map<UUID, List<CardFace>> facesByCard) {
         if (card.getOracleId() != null) {
             return "oracle:" + card.getOracleId();
         }
@@ -165,17 +165,17 @@ public class CardSearchService {
                 .collect(Collectors.joining(","));
 
         return faceOracleIds.isEmpty()
-                ? "card:" + card.getId().getId()
+                ? "card:" + card.getId()
                 : "faces:" + faceOracleIds;
     }
 
     private CardSearchResponse.OracleCard toOracleCard(
             List<ActiveCard> cards,
-            Map<CardId, List<CardFace>> facesByCard,
-            Map<CardId, Double> similarityScores) {
+            Map<UUID, List<CardFace>> facesByCard,
+            Map<UUID, Double> similarityScores) {
         List<ActiveCard> uniquePrints = new ArrayList<>(cards.stream()
                 .collect(Collectors.toMap(
-                        card -> card.getId().getId(),
+                        ActiveCard::getId,
                         card -> card,
                         (first, ignored) -> first,
                         LinkedHashMap::new))
@@ -192,6 +192,13 @@ public class CardSearchService {
                 .map(card -> toCardPrint(card, facesByCard.getOrDefault(card.getId(), List.of())))
                 .toList();
 
+        Double similarityScore = uniquePrints.stream()
+                .map(ActiveCard::getId)
+                .map(similarityScores::get)
+                .filter(java.util.Objects::nonNull)
+                .max(Double::compareTo)
+                .orElse(null);
+
         return new CardSearchResponse.OracleCard(
                 representative.getOracleId(),
                 representative.getName(),
@@ -204,7 +211,7 @@ public class CardSearchService {
                 toList(representative.getColorIdentity()),
                 toList(representative.getKeywords()),
                 toJsonNode(representative.getLegalities()),
-                similarityScores.get(representative.getId()),
+                similarityScore,
                 faces,
                 prints);
     }
@@ -228,7 +235,7 @@ public class CardSearchService {
                 : card.getRarity().name().toLowerCase(Locale.ROOT);
 
         return new CardSearchResponse.CardPrint(
-                card.getId().getId(),
+                card.getId(),
                 card.getSetCode(),
                 card.getSetName(),
                 card.getCollectorNumber(),

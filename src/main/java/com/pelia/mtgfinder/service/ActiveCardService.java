@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.pelia.mtgfinder.model.ActiveCard;
-import com.pelia.mtgfinder.model.CardId;
 import com.pelia.mtgfinder.repository.ActiveCardRepository;
 
 import jakarta.persistence.EntityNotFoundException;
@@ -26,9 +25,9 @@ public class ActiveCardService {
 		return repository.findAll();
 	}
 
-	public ActiveCard findById(CardId id) {
+	public ActiveCard findById(UUID id) {
 		return repository.findById(id)
-				.orElseThrow(() -> new EntityNotFoundException("Active card not found: " + id.getId()));
+				.orElseThrow(() -> new EntityNotFoundException("Active card not found: " + id));
 	}
 
 	public List<ActiveCard> findByName(String name) {

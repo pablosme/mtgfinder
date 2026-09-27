@@ -38,6 +38,12 @@ public class BulkImport {
 	@Column(name = "activated_at")
 	private OffsetDateTime activatedAt;
 
+	@Column(name = "created_cards")
+	private Integer createdCards = 0;
+
+	@Column(name = "updated_cards")
+	private Integer updatedCards = 0;
+
 	public UUID getId() { return id; }
 	public void setId(UUID id) { this.id = id; }
 	public String getScryfallBulkType() { return scryfallBulkType; }
@@ -51,4 +57,8 @@ public class BulkImport {
 	public OffsetDateTime getCreatedAt() { return createdAt; }
 	public OffsetDateTime getActivatedAt() { return activatedAt; }
 	public void setActivatedAt(OffsetDateTime activatedAt) { this.activatedAt = activatedAt; }
+	public Integer getCreatedCards() { return createdCards; }
+	public void setCreatedCards(Integer createdCards) { this.createdCards = createdCards; }
+	public Integer getUpdatedCards() { return updatedCards; }
+	public void setUpdatedCards(Integer updatedCards) { this.updatedCards = updatedCards; }
 }

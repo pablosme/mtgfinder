@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.pelia.mtgfinder.model.Card;
-import com.pelia.mtgfinder.model.CardId;
 import com.pelia.mtgfinder.repository.CardRepository;
 
 import jakarta.persistence.EntityNotFoundException;
@@ -26,17 +25,17 @@ public class CardService {
 		return repository.findAll();
 	}
 
-	public Card findById(CardId id) {
+	public Card findById(UUID id) {
 		return repository.findById(id)
-				.orElseThrow(() -> new EntityNotFoundException("Card not found: " + id.getId()));
+				.orElseThrow(() -> new EntityNotFoundException("Card not found: " + id));
 	}
 
 	public List<Card> findByImportId(UUID importId) {
-		return repository.findByIdImportId(importId);
+		return repository.findByImportId(importId);
 	}
 
 	public List<Card> findByName(UUID importId, String name) {
-		return repository.findByIdImportIdAndNameContainingIgnoreCase(importId, name);
+		return repository.findByImportIdAndNameContainingIgnoreCase(importId, name);
 	}
 
 	public List<Card> findByOracleId(UUID oracleId) {
@@ -49,7 +48,7 @@ public class CardService {
 	}
 
 	@Transactional
-	public void delete(CardId id) {
+	public void delete(UUID id) {
 		repository.delete(findById(id));
 	}
 }

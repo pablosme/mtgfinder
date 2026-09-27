@@ -8,45 +8,46 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import com.pelia.mtgfinder.model.Card;
-import com.pelia.mtgfinder.model.CardId;
 
-public interface CardRepository extends JpaRepository<Card, CardId> {
+public interface CardRepository extends JpaRepository<Card, UUID> {
 
 	@Query(value = """
-			WITH tokenized_cards AS (
-				SELECT card.import_id,
-				       card.id,
-				       COALESCE(
-				           CEIL(ARRAY_LENGTH(REGEXP_SPLIT_TO_ARRAY(TRIM(card.context_text), '\\s+'), 1) * 1.35),
-				           0
-				       )::BIGINT AS estimated_tokens,
-				       ROW_NUMBER() OVER (ORDER BY card.id) AS row_number
+			WITH pending_cards AS (
+				SELECT representative.id
+				FROM cards_semantic_v semantic
+				CROSS JOIN LATERAL (
+					SELECT card.id
+					FROM cards card
+					WHERE card.oracle_id = semantic.oracle_id
+					  AND card.lang = semantic.lang
+					ORDER BY card.id
+					LIMIT 1
+				) representative
+				WHERE semantic.embedding IS NULL
+				  AND semantic.oracle_id IS NOT NULL
+
+				UNION ALL
+
+				SELECT card.id
 				FROM cards card
-				WHERE card.import_id = :importId
+				WHERE card.oracle_id IS NULL
 				  AND card.embedding IS NULL
-			), ranked_cards AS (
-				SELECT tokenized_cards.*,
-				       SUM(estimated_tokens) OVER (
-				           ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-				       ) AS accumulated_tokens
-				FROM tokenized_cards
+			), batch AS (
+				SELECT id
+				FROM pending_cards
+				ORDER BY id
+				LIMIT :batchSize
 			)
 			SELECT card.*
 			FROM cards card
-			JOIN ranked_cards ranked
-			  ON ranked.import_id = card.import_id
-			 AND ranked.id = card.id
-			WHERE ranked.accumulated_tokens <= :maxEstimatedTokens
-			   OR ranked.row_number = 1
+			JOIN batch ON batch.id = card.id
 			ORDER BY card.id
 			""", nativeQuery = true)
-	List<Card> findPendingEmbeddingsByImportId(
-			@Param("importId") UUID importId,
-			@Param("maxEstimatedTokens") int maxEstimatedTokens);
+	List<Card> findPendingEmbeddings(@Param("batchSize") int batchSize);
 
-	List<Card> findByIdImportId(UUID importId);
+	List<Card> findByImportId(UUID importId);
 
-	List<Card> findByIdImportIdAndNameContainingIgnoreCase(UUID importId, String name);
+	List<Card> findByImportIdAndNameContainingIgnoreCase(UUID importId, String name);
 
 	List<Card> findByOracleId(UUID oracleId);
 }

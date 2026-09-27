@@ -19,22 +19,16 @@ public abstract class BaseCardData {
 
 	@Column(name = "oracle_id")
 	private UUID oracleId;
+	@Column(name = "import_id", nullable = false)
+	private UUID importId;
+	@Column(name = "metadata_hash", length = 64)
+	private String metadataHash;
 	@Column(nullable = false, length = 255)
 	private String name;
 	@Column(nullable = false, length = 10)
 	private String lang = "en";
 	@Column(nullable = false, length = 50)
 	private String layout;
-	@Column(name = "multiverse_ids", columnDefinition = "integer[]")
-	private Integer[] multiverseIds;
-	@Column(name = "mtgo_id")
-	private Integer mtgoId;
-	@Column(name = "arena_id")
-	private Integer arenaId;
-	@Column(name = "tcgplayer_id")
-	private Integer tcgplayerId;
-	@Column(name = "cardmarket_id")
-	private Integer cardmarketId;
 	@Column(name = "mana_cost", length = 100)
 	private String manaCost;
 	@Column(precision = 12, scale = 2)
@@ -105,22 +99,16 @@ public abstract class BaseCardData {
 
 	public UUID getOracleId() { return oracleId; }
 	public void setOracleId(UUID value) { oracleId = value; }
+	public UUID getImportId() { return importId; }
+	public void setImportId(UUID value) { importId = value; }
+	public String getMetadataHash() { return metadataHash; }
+	public void setMetadataHash(String value) { metadataHash = value; }
 	public String getName() { return name; }
 	public void setName(String value) { name = value; }
 	public String getLang() { return lang; }
 	public void setLang(String value) { lang = value; }
 	public String getLayout() { return layout; }
 	public void setLayout(String value) { layout = value; }
-	public Integer[] getMultiverseIds() { return multiverseIds; }
-	public void setMultiverseIds(Integer[] value) { multiverseIds = value; }
-	public Integer getMtgoId() { return mtgoId; }
-	public void setMtgoId(Integer value) { mtgoId = value; }
-	public Integer getArenaId() { return arenaId; }
-	public void setArenaId(Integer value) { arenaId = value; }
-	public Integer getTcgplayerId() { return tcgplayerId; }
-	public void setTcgplayerId(Integer value) { tcgplayerId = value; }
-	public Integer getCardmarketId() { return cardmarketId; }
-	public void setCardmarketId(Integer value) { cardmarketId = value; }
 	public String getManaCost() { return manaCost; }
 	public void setManaCost(String value) { manaCost = value; }
 	public BigDecimal getCmc() { return cmc; }

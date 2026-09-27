@@ -75,49 +75,54 @@ public class ScryfallImportService {
     }
 
     public ScryfallImportResponse importCards(String bulkType) {
+        // Gets the latest JsonL download URL for the specified bulk type from Scryfall
         ScryfallBulkDataResponse bulkData = getBulkJsonlUrl(bulkType);
         URI jsonlDownloadUri = URI.create(bulkData.jsonlDownloadUri());
 
+        // Creates a new BulkImport record in the database to track the import process
         BulkImport bulkImport = new BulkImport();
         bulkImport.setScryfallBulkType(bulkData.type());
         bulkImport.setScryfallUpdatedAt(bulkData.updatedAt());
         bulkImport = bulkImportService.save(bulkImport);
 
-        try (Stream<ScryfallCard> cardStream = streamBulkCards(jsonlDownloadUri, bulkImport.getId())) {
-            int batchCount = 0;
-            int totalCards = 0;
-            List<ScryfallCard> cards = new ArrayList<>(bulkInsertBatchSize);
-            Iterator<ScryfallCard> iterator = cardStream.iterator();
+        // Starts the cards stream and processes them in batches
+        int totalCards = 0;
+        try {
+            postgresBulkCopyService.prepareImport(bulkImport.getId());
+            try (Stream<ScryfallCard> cardStream = streamBulkCards(jsonlDownloadUri, bulkImport.getId())) {
+                int batchCount = 0;
+                List<ScryfallCard> cards = new ArrayList<>(bulkInsertBatchSize);
+                Iterator<ScryfallCard> iterator = cardStream.iterator();
 
-            while (iterator.hasNext()) {
-                cards.add(iterator.next());
-                if (cards.size() >= bulkInsertBatchSize) {
+                // Processes the cards in batches of bulkInsertBatchSize inserting them into the
+                // staging tables
+                while (iterator.hasNext()) {
+                    cards.add(iterator.next());
+                    if (cards.size() >= bulkInsertBatchSize) {
+                        batchCount++;
+                        System.out.println("Processing batch " + batchCount + " with " + cards.size() + " cards");
+
+                        postgresBulkCopyService.insertBatchCopy(bulkImport.getId(), cards);
+                        totalCards += cards.size();
+                        cards.clear();
+                    }
+                }
+
+                // Processes any remaining cards that didn't fill a complete batch
+                if (!cards.isEmpty()) {
                     batchCount++;
-                    System.out.println("Processing batch " + batchCount + " with " + cards.size() + " cards");
-
+                    System.out.println("Processing final batch " + batchCount + " with " + cards.size() + " cards");
                     postgresBulkCopyService.insertBatchCopy(bulkImport.getId(), cards);
                     totalCards += cards.size();
-                    cards.clear();
                 }
             }
 
-            if (!cards.isEmpty()) {
-                batchCount++;
-                System.out.println("Processing final batch " + batchCount + " with " + cards.size() + " cards");
-                postgresBulkCopyService.insertBatchCopy(bulkImport.getId(), cards);
-                totalCards += cards.size();
-            }
-
-            bulkImport.setTotalCards(totalCards);
-            bulkImportService.save(bulkImport);
-            BulkImport completedImport = bulkImportService.activate(bulkImport.getId());
-            List<ImportLogResponse> logs = importLogService.findByImportId(bulkImport.getId()).stream()
-                    .map(ImportLogResponse::from)
-                    .toList();
-            return ScryfallImportResponse.from(completedImport, logs);
+            // Updates the BulkImport record to mark the import as completed and finalizes the import process
+            postgresBulkCopyService.finalizeImport(bulkImport.getId(), totalCards);
         } catch (RuntimeException exception) {
             try {
-                postgresBulkCopyService.deleteImportData(bulkImport.getId());
+                // On error, discards the staged import to clean up any partially inserted data
+                postgresBulkCopyService.discardStagedImport(bulkImport.getId());
             } catch (RuntimeException cleanupException) {
                 exception.addSuppressed(cleanupException);
             }
@@ -130,6 +135,13 @@ public class ScryfallImportService {
             }
             throw exception;
         }
+
+        // Retrieves the completed BulkImport record and any associated import logs to return in the response
+        BulkImport completedImport = bulkImportService.findById(bulkImport.getId());
+        List<ImportLogResponse> logs = importLogService.findByImportId(bulkImport.getId()).stream()
+                .map(ImportLogResponse::from)
+                .toList();
+        return ScryfallImportResponse.from(completedImport, logs);
     }
 
     private Stream<ScryfallCard> streamBulkCards(URI jsonlDownloadUri, UUID importId) {
@@ -249,7 +261,7 @@ public class ScryfallImportService {
             throws IOException, InterruptedException {
         Duration retryDelay = INITIAL_RETRY_DELAY;
 
-        for (int attempt = 1; ; attempt++) {
+        for (int attempt = 1;; attempt++) {
             HttpResponse<T> response = httpClient.send(request, bodyHandler);
             if (!isRetryable(response.statusCode()) || attempt >= MAX_REQUEST_ATTEMPTS) {
                 return response;

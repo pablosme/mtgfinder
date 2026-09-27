@@ -4,8 +4,12 @@ import java.io.IOException;
 import java.io.Reader;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collection;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -25,26 +29,135 @@ import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class PostgresBulkCopyService {
-    private static final String DELETE_IMPORT_CARDS_SQL = "DELETE FROM cards WHERE import_id = ?";
+    private static final String DELETE_STAGED_FACES_SQL = "DELETE FROM card_faces_staging WHERE import_id = ?";
+    private static final String DELETE_STAGED_CARDS_SQL = "DELETE FROM cards_staging WHERE import_id = ?";
 
     private static final String COPY_CARDS_SQL = """
-            COPY cards (
-                id, import_id, oracle_id, name, lang, layout, multiverse_ids,
-                mtgo_id, arena_id, tcgplayer_id, cardmarket_id, mana_cost, cmc,
-                type_line, oracle_text, colors, color_identity, keywords,
-                produced_mana, power, toughness, loyalty, defense, reserved,
-                digital, reprint, set_code, set_name, collector_number, rarity,
-                flavor_text, artist, released_at, legalities, image_uris, prices,
-                related_uris, all_parts, context_text
+            COPY cards_staging (
+                id, import_id, oracle_id, metadata_hash, name, lang, layout,
+                mana_cost, cmc, type_line, oracle_text, colors, color_identity,
+                keywords, produced_mana, power, toughness, loyalty, defense,
+                reserved, digital, reprint, set_code, set_name, collector_number,
+                rarity, flavor_text, artist, released_at, legalities, image_uris,
+                prices, related_uris, all_parts, context_text
             ) FROM STDIN WITH (FORMAT text)
             """;
 
     private static final String COPY_CARD_FACES_SQL = """
-            COPY card_faces (
+            COPY card_faces_staging (
                 import_id, card_id, face_index, name, oracle_id, mana_cost, cmc,
                 type_line, oracle_text, colors, power, toughness, loyalty,
                 defense, flavor_text, artist, image_uris
             ) FROM STDIN WITH (FORMAT text)
+            """;
+
+    private static final String COUNT_CHANGES_SQL = """
+            SELECT COUNT(*) FILTER (WHERE card.id IS NULL) AS created_cards,
+                   COUNT(*) FILTER (
+                       WHERE card.id IS NOT NULL
+                         AND card.metadata_hash IS DISTINCT FROM staged.metadata_hash
+                   ) AS updated_cards
+            FROM cards_staging staged
+            LEFT JOIN cards card ON card.id = staged.id
+            WHERE staged.import_id = ?
+            """;
+
+    private static final String UPSERT_CARDS_SQL = """
+            INSERT INTO cards (
+                id, import_id, oracle_id, metadata_hash, name, lang, layout,
+                mana_cost, cmc, type_line, oracle_text, colors, color_identity,
+                keywords, produced_mana, power, toughness, loyalty, defense,
+                reserved, digital, reprint, set_code, set_name, collector_number,
+                rarity, flavor_text, artist, released_at, legalities, image_uris,
+                prices, related_uris, all_parts, context_text
+            )
+            SELECT id, import_id, oracle_id, metadata_hash, name,
+                   COALESCE(lang, 'en'), layout, mana_cost, cmc, type_line,
+                   oracle_text, colors, COALESCE(color_identity, '{}'),
+                   COALESCE(keywords, '{}'), produced_mana, power, toughness,
+                   loyalty, defense, COALESCE(reserved, FALSE),
+                   COALESCE(digital, FALSE), COALESCE(reprint, FALSE), set_code,
+                   set_name, collector_number, rarity, flavor_text, artist,
+                   released_at, COALESCE(legalities, '{}'::jsonb), image_uris,
+                   COALESCE(prices, '{}'::jsonb), related_uris, all_parts,
+                   context_text
+            FROM cards_staging
+            WHERE import_id = ?
+            ON CONFLICT (id) DO UPDATE SET
+                import_id = EXCLUDED.import_id,
+                oracle_id = EXCLUDED.oracle_id,
+                metadata_hash = EXCLUDED.metadata_hash,
+                name = EXCLUDED.name,
+                lang = EXCLUDED.lang,
+                layout = EXCLUDED.layout,
+                mana_cost = EXCLUDED.mana_cost,
+                cmc = EXCLUDED.cmc,
+                type_line = EXCLUDED.type_line,
+                oracle_text = EXCLUDED.oracle_text,
+                colors = EXCLUDED.colors,
+                color_identity = EXCLUDED.color_identity,
+                keywords = EXCLUDED.keywords,
+                produced_mana = EXCLUDED.produced_mana,
+                power = EXCLUDED.power,
+                toughness = EXCLUDED.toughness,
+                loyalty = EXCLUDED.loyalty,
+                defense = EXCLUDED.defense,
+                reserved = EXCLUDED.reserved,
+                digital = EXCLUDED.digital,
+                reprint = EXCLUDED.reprint,
+                set_code = EXCLUDED.set_code,
+                set_name = EXCLUDED.set_name,
+                collector_number = EXCLUDED.collector_number,
+                rarity = EXCLUDED.rarity,
+                flavor_text = EXCLUDED.flavor_text,
+                artist = EXCLUDED.artist,
+                released_at = EXCLUDED.released_at,
+                legalities = EXCLUDED.legalities,
+                image_uris = EXCLUDED.image_uris,
+                prices = EXCLUDED.prices,
+                related_uris = EXCLUDED.related_uris,
+                all_parts = EXCLUDED.all_parts,
+                context_text = EXCLUDED.context_text,
+                embedding = CASE
+                    WHEN cards.context_text IS DISTINCT FROM EXCLUDED.context_text THEN NULL
+                    ELSE cards.embedding
+                END
+            """;
+
+    private static final String DELETE_REPLACED_FACES_SQL = """
+            DELETE FROM card_faces
+            WHERE card_id IN (
+                SELECT id FROM cards_staging WHERE import_id = ?
+            )
+            """;
+
+    private static final String INSERT_FACES_SQL = """
+            INSERT INTO card_faces (
+                import_id, card_id, face_index, name, oracle_id, mana_cost, cmc,
+                type_line, oracle_text, colors, power, toughness, loyalty,
+                defense, flavor_text, artist, image_uris
+            )
+            SELECT import_id, card_id, face_index, name, oracle_id, mana_cost, cmc,
+                   type_line, oracle_text, colors, power, toughness, loyalty,
+                   defense, flavor_text, artist, image_uris
+            FROM card_faces_staging
+            WHERE import_id = ?
+            """;
+
+    private static final String DEPRECATE_ACTIVE_IMPORTS_SQL = """
+            UPDATE bulk_imports
+            SET status = 'DEPRECATED'
+            WHERE status = 'ACTIVE' AND id <> ?
+            """;
+
+    private static final String ACTIVATE_IMPORT_SQL = """
+            UPDATE bulk_imports
+            SET status = 'ACTIVE',
+                total_cards = ?,
+                created_cards = ?,
+                updated_cards = ?,
+                activated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND status = 'PROCESSING'
             """;
 
     private final DataSource dataSource;
@@ -53,6 +166,10 @@ public class PostgresBulkCopyService {
     public PostgresBulkCopyService(DataSource dataSource, ObjectMapper objectMapper) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
+    }
+
+    public void prepareImport(UUID importId) {
+        discardStagedImport(importId);
     }
 
     public void insertBatchCopy(UUID importId, List<ScryfallCard> cardRows) {
@@ -66,10 +183,12 @@ public class PostgresBulkCopyService {
                 CopyManager copyManager = connection.unwrap(PGConnection.class).getCopyAPI();
                 // TODO: Validar os totais retornados por copyIn contra as quantidades
                 // esperadas de cards e card_faces.
+                // Inserts the cards into the staging table using COPY command
                 try (Reader cardReader = cardCopyReader(importId, cardRows)) {
                     copyManager.copyIn(COPY_CARDS_SQL, cardReader);
                 }
 
+                // Inserts the card faces into the staging table using COPY command
                 if (hasCardFaces(cardRows)) {
                     try (Reader cardFaceReader = cardFaceCopyReader(importId, cardRows)) {
                         copyManager.copyIn(COPY_CARD_FACES_SQL, cardFaceReader);
@@ -87,22 +206,102 @@ public class PostgresBulkCopyService {
         }
     }
 
-    public void deleteImportData(UUID importId) {
+    public void finalizeImport(UUID importId, int totalCards) {
         Objects.requireNonNull(importId, "importId must not be null");
+        if (totalCards < 0) {
+            throw new IllegalArgumentException("totalCards must not be negative");
+        }
 
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
 
-            try (PreparedStatement statement = connection.prepareStatement(DELETE_IMPORT_CARDS_SQL)) {
-                statement.setObject(1, importId);
-                statement.executeUpdate();
+            try {
+                int createdCards;
+                int updatedCards;
+                // Counts the number of created and updated cards based on the staging table
+                try (PreparedStatement statement = connection.prepareStatement(COUNT_CHANGES_SQL)) {
+                    statement.setObject(1, importId);
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        resultSet.next();
+                        createdCards = Math.toIntExact(resultSet.getLong("created_cards"));
+                        updatedCards = Math.toIntExact(resultSet.getLong("updated_cards"));
+                    }
+                }
+
+                // Update/inserts cards into the main tables
+                try (PreparedStatement statement = connection.prepareStatement(UPSERT_CARDS_SQL)) {
+                    statement.setObject(1, importId);
+                    statement.executeUpdate();
+                }
+
+                // Deletes any existing card faces for the cards being imported and inserts the
+                // new card faces
+                try (PreparedStatement statement = connection.prepareStatement(DELETE_REPLACED_FACES_SQL)) {
+                    statement.setObject(1, importId);
+                    statement.executeUpdate();
+                }
+
+                // Inserts the new card faces into the main table
+                try (PreparedStatement statement = connection.prepareStatement(INSERT_FACES_SQL)) {
+                    statement.setObject(1, importId);
+                    statement.executeUpdate();
+                }
+
+                // Deprecates the old active imports and activates the new import
+                try (PreparedStatement statement = connection.prepareStatement(DEPRECATE_ACTIVE_IMPORTS_SQL)) {
+                    statement.setObject(1, importId);
+                    statement.executeUpdate();
+                }
+
+                // Updates the new import
+                try (PreparedStatement statement = connection.prepareStatement(ACTIVATE_IMPORT_SQL)) {
+                    statement.setInt(1, totalCards);
+                    statement.setInt(2, createdCards);
+                    statement.setInt(3, updatedCards);
+                    statement.setObject(4, importId);
+                    if (statement.executeUpdate() != 1) {
+                        throw new IllegalStateException("Import is not in PROCESSING status: " + importId);
+                    }
+                }
+
+                // Clears the staging tables for the import
+                deleteStagedRows(connection, importId);
+                connection.commit();
+
+            } catch (SQLException | RuntimeException exception) {
+                rollback(connection, exception);
+                throw new IllegalStateException("Could not merge staged import " + importId, exception);
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not access PostgreSQL while finalizing import", exception);
+        }
+    }
+
+    public void discardStagedImport(UUID importId) {
+        Objects.requireNonNull(importId, "importId must not be null");
+
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                deleteStagedRows(connection, importId);
                 connection.commit();
             } catch (SQLException exception) {
                 rollback(connection, exception);
-                throw new IllegalStateException("Could not delete data for failed import " + importId, exception);
+                throw new IllegalStateException("Could not discard staged import " + importId, exception);
             }
         } catch (SQLException exception) {
-            throw new IllegalStateException("Could not access PostgreSQL during failed import cleanup", exception);
+            throw new IllegalStateException("Could not access PostgreSQL during staging cleanup", exception);
+        }
+    }
+
+    private void deleteStagedRows(Connection connection, UUID importId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(DELETE_STAGED_FACES_SQL)) {
+            statement.setObject(1, importId);
+            statement.executeUpdate();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(DELETE_STAGED_CARDS_SQL)) {
+            statement.setObject(1, importId);
+            statement.executeUpdate();
         }
     }
 
@@ -118,18 +317,15 @@ public class PostgresBulkCopyService {
         Objects.requireNonNull(importId, "importId must not be null");
         Objects.requireNonNull(card, "card must not be null");
 
+        String contextText = buildEmbeddingText(card);
         StringBuilder cardRow = new StringBuilder();
         cardRow.append(copyValue(card.id())).append("\t")
                 .append(copyValue(importId)).append("\t")
                 .append(copyValue(card.oracleId())).append("\t")
+                .append(copyValue(metadataHash(card, contextText))).append("\t")
                 .append(copyValue(card.name())).append("\t")
                 .append(copyValue(card.lang())).append("\t")
                 .append(copyValue(card.layout())).append("\t")
-                .append(copyArray(card.multiverseIds())).append("\t")
-                .append(copyValue(card.mtgoId())).append("\t")
-                .append(copyValue(card.arenaId())).append("\t")
-                .append(copyValue(card.tcgplayerId())).append("\t")
-                .append(copyValue(card.cardmarketId())).append("\t")
                 .append(copyValue(card.manaCost())).append("\t")
                 .append(copyValue(card.cmc())).append("\t")
                 .append(copyValue(card.typeLine())).append("\t")
@@ -157,7 +353,7 @@ public class PostgresBulkCopyService {
                 .append(copyJson(card.prices())).append("\t")
                 .append(copyJson(card.relatedUris())).append("\t")
                 .append(copyJson(card.allParts())).append("\t")
-                .append(copyValue(buildEmbeddingText(card))).append("\n");
+                .append(copyValue(contextText)).append("\n");
 
         return cardRow.toString();
     }
@@ -194,6 +390,7 @@ public class PostgresBulkCopyService {
 
     Reader cardCopyReader(UUID importId, List<ScryfallCard> cards) {
         Iterator<ScryfallCard> cardIterator = cards.iterator();
+        // Wraps the card iterator in a reader that converts each card to a COPY row
         return new CopyRowReader(new Iterator<>() {
             @Override
             public boolean hasNext() {
@@ -347,6 +544,35 @@ public class PostgresBulkCopyService {
         }
 
         return context.toString().stripTrailing();
+    }
+
+    private String metadataHash(ScryfallCard card, String contextText) {
+        try {
+            List<Object[]> faceMetadata = card.cardFaces() == null
+                    ? null
+                    : card.cardFaces().stream()
+                            .map(face -> new Object[] {
+                                    face.name(), face.oracleId(), face.manaCost(), face.cmc(),
+                                    face.typeLine(), face.oracleText(), face.colors(), face.power(),
+                                    face.toughness(), face.loyalty(), face.defense(), face.flavorText(),
+                                    face.artist(), face.imageUris(), face.printedName(), face.printedText(),
+                                    face.printedTypeLine()
+                            })
+                            .toList();
+            Object[] metadata = {
+                    card.oracleId(), card.name(), card.lang(), card.layout(), card.manaCost(),
+                    card.cmc(), card.typeLine(), card.oracleText(), card.colors(), card.colorIdentity(),
+                    card.keywords(), card.producedMana(), card.power(), card.toughness(), card.loyalty(),
+                    card.defense(), card.reserved(), card.digital(), card.reprint(), card.set(),
+                    card.setName(), card.collectorNumber(), card.rarity(), card.flavorText(), card.artist(),
+                    card.releasedAt(), card.legalities(), card.imageUris(), card.prices(), card.relatedUris(),
+                    card.allParts(), contextText, faceMetadata
+            };
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(objectMapper.writeValueAsBytes(metadata)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is not available", exception);
+        }
     }
 
     private void appendContext(StringBuilder context, String label, Object value) {

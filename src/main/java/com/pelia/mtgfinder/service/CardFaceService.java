@@ -30,8 +30,8 @@ public class CardFaceService {
 				.orElseThrow(() -> new EntityNotFoundException("Card face not found: " + id));
 	}
 
-	public List<CardFace> findByCard(UUID importId, UUID cardId) {
-		return repository.findByImportIdAndCardIdOrderByFaceIndex(importId, cardId);
+	public List<CardFace> findByCard(UUID cardId) {
+		return repository.findByCardIdOrderByFaceIndex(cardId);
 	}
 
 	@Transactional

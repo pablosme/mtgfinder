@@ -12,16 +12,14 @@ import com.pelia.mtgfinder.model.CardFace;
 
 public interface CardFaceRepository extends JpaRepository<CardFace, Long> {
 
-	List<CardFace> findByImportIdAndCardIdOrderByFaceIndex(UUID importId, UUID cardId);
+	List<CardFace> findByCardIdOrderByFaceIndex(UUID cardId);
 
 	@Query(value = """
 			SELECT face.*
 			FROM card_faces face
-			JOIN cards_active_v card
-			  ON card.import_id = face.import_id
-			 AND card.id = face.card_id
+			JOIN cards card ON card.id = face.card_id
 			WHERE card.id IN (:cardIds)
-			ORDER BY face.import_id, face.card_id, face.face_index
+			ORDER BY face.card_id, face.face_index
 			""", nativeQuery = true)
 	List<CardFace> findForActiveCardsByCardIds(@Param("cardIds") Collection<UUID> cardIds);
 }

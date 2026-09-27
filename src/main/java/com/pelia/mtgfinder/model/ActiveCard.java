@@ -2,17 +2,19 @@ package com.pelia.mtgfinder.model;
 
 import org.hibernate.annotations.Immutable;
 
-import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+
+import java.util.UUID;
 
 @Entity
 @Immutable
-@Table(name = "cards_active_v")
+@Table(name = "cards")
 public class ActiveCard extends BaseCardData {
 
-	@EmbeddedId
-	private CardId id;
+	@Id
+	private UUID id;
 
-	public CardId getId() { return id; }
+	public UUID getId() { return id; }
 }

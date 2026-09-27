@@ -13,7 +13,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import tools.jackson.databind.JsonNode;
@@ -61,10 +60,7 @@ public class CardFace {
 	@Column(name = "image_uris", columnDefinition = "jsonb")
 	private JsonNode imageUris;
 	@ManyToOne(fetch = FetchType.LAZY, optional = false)
-	@JoinColumns({
-		@JoinColumn(name = "import_id", referencedColumnName = "import_id", insertable = false, updatable = false),
-		@JoinColumn(name = "card_id", referencedColumnName = "id", insertable = false, updatable = false)
-	})
+	@JoinColumn(name = "card_id", referencedColumnName = "id", insertable = false, updatable = false)
 	private Card card;
 
 	public Long getId() { return id; }

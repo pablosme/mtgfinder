@@ -1,21 +1,24 @@
--- 1. Extensões
+-- 1. Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- 2. Controle de Versão / Ingestão
+-- 2. Version/Ingestion Control
 CREATE TABLE IF NOT EXISTS bulk_imports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scryfall_bulk_type VARCHAR(50) NOT NULL,            -- ex: 'default-cards', 'oracle-cards'
-    scryfall_updated_at TIMESTAMPTZ,                    -- Timestamp informado pelo Scryfall
-    status VARCHAR(20) NOT NULL DEFAULT 'PROCESSING',   -- 'PROCESSING', 'ACTIVE', 'DEPRECATED', 'FAILED'
+    scryfall_bulk_type VARCHAR(50) NOT NULL,
+    scryfall_updated_at TIMESTAMPTZ,
+    status VARCHAR(20) NOT NULL DEFAULT 'PROCESSING',
     total_cards INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     activated_at TIMESTAMPTZ,
+    created_cards INTEGER DEFAULT 0,
+    updated_cards INTEGER DEFAULT 0,
 
     CONSTRAINT chk_import_status CHECK (status IN ('PROCESSING', 'ACTIVE', 'DEPRECATED', 'FAILED'))
 );
 
+-- 3. Import Logs
 CREATE TABLE IF NOT EXISTS import_logs (
     id BIGSERIAL PRIMARY KEY,
     import_id UUID,
@@ -30,23 +33,17 @@ CREATE TABLE IF NOT EXISTS import_logs (
 
 CREATE INDEX IF NOT EXISTS idx_import_logs_import_id ON import_logs(import_id);
 
--- 3. Tabela de Cartas (Versionada)
+-- 4. Cards Table
 CREATE TABLE IF NOT EXISTS cards (
-    id UUID NOT NULL,                                   -- ID da impressão no Scryfall
-    import_id UUID NOT NULL,                            -- Versão da carga de dados
+    id UUID NOT NULL,
+    import_id UUID NOT NULL,
     oracle_id UUID,
+    metadata_hash VARCHAR(64),
     name VARCHAR(255) NOT NULL,
     lang VARCHAR(10) NOT NULL DEFAULT 'en',
     layout VARCHAR(50) NOT NULL,
-    
-    -- IDs de plataformas externas
-    multiverse_ids INTEGER[],
-    mtgo_id INTEGER,
-    arena_id INTEGER,
-    tcgplayer_id INTEGER,
-    cardmarket_id INTEGER,
 
-    -- Gameplay e Regras
+    -- Gameplay and Rulings
     mana_cost VARCHAR(100),
     cmc NUMERIC(12, 2),
     type_line VARCHAR(255),
@@ -55,8 +52,8 @@ CREATE TABLE IF NOT EXISTS cards (
     color_identity VARCHAR(5)[] NOT NULL,
     keywords TEXT[] NOT NULL DEFAULT '{}',
     produced_mana VARCHAR(5)[],
-    
-    -- Atributos de Combate (Sem restrição de 3 dígitos)
+
+    -- Combat Attributes
     power VARCHAR(30),
     toughness VARCHAR(30),
     loyalty VARCHAR(30),
@@ -67,7 +64,7 @@ CREATE TABLE IF NOT EXISTS cards (
     digital BOOLEAN NOT NULL DEFAULT FALSE,
     reprint BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- Coleção
+    -- Collection
     set_code VARCHAR(10) NOT NULL,
     set_name VARCHAR(255) NOT NULL,
     collector_number VARCHAR(20) NOT NULL,
@@ -76,7 +73,7 @@ CREATE TABLE IF NOT EXISTS cards (
     artist VARCHAR(255),
     released_at DATE,
 
-    -- Dados Semiestruturados
+    -- Semistructured Data
     legalities JSONB NOT NULL DEFAULT '{}'::jsonb,
     image_uris JSONB,
     prices JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -89,13 +86,13 @@ CREATE TABLE IF NOT EXISTS cards (
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    -- Chave primária composta garantindo isolamento por versão
-    PRIMARY KEY (import_id, id),
+    -- Primary Key and Foreign Key Constraints
+    PRIMARY KEY (id),
     CONSTRAINT fk_cards_import FOREIGN KEY (import_id) REFERENCES bulk_imports(id) ON DELETE CASCADE,
     CONSTRAINT chk_rarity CHECK (rarity IN ('common', 'uncommon', 'rare', 'mythic', 'special', 'bonus'))
 );
 
--- 4. Tabela de Faces (Versionada)
+-- 5. Faces Table (for multi-faced cards)
 CREATE TABLE IF NOT EXISTS card_faces (
     id BIGSERIAL PRIMARY KEY,
     import_id UUID NOT NULL,
@@ -109,57 +106,140 @@ CREATE TABLE IF NOT EXISTS card_faces (
     type_line VARCHAR(255),
     oracle_text TEXT,
     colors VARCHAR(5)[],
-    
+
     power VARCHAR(30),
     toughness VARCHAR(30),
     loyalty VARCHAR(30),
     defense VARCHAR(30),
-    
+
     flavor_text TEXT,
     artist VARCHAR(255),
     image_uris JSONB,
-    
-    CONSTRAINT fk_card_faces_card 
-        FOREIGN KEY (import_id, card_id) 
-        REFERENCES cards(import_id, id) 
+
+    CONSTRAINT fk_card_faces_card
+        FOREIGN KEY (card_id)
+        REFERENCES cards(id)
         ON DELETE CASCADE,
-    CONSTRAINT uq_card_face 
-        UNIQUE (import_id, card_id, face_index)
+    CONSTRAINT uq_card_face
+        UNIQUE (card_id, face_index)
 );
 
--- 5. View para consumo da aplicação (Lê apenas a versão ativa)
-CREATE OR REPLACE VIEW cards_active_v AS
-SELECT c.* 
-FROM cards c
-JOIN bulk_imports b ON c.import_id = b.id
-WHERE b.status = 'ACTIVE';
+
+-- 6. Cards Staging Table
+CREATE UNLOGGED TABLE IF NOT EXISTS cards_staging (
+    id UUID NOT NULL,
+    import_id UUID NOT NULL,
+    oracle_id UUID,
+    metadata_hash VARCHAR(64),
+    name VARCHAR(255) NOT NULL,
+    lang VARCHAR(10) DEFAULT 'en',
+    layout VARCHAR(50),
+
+    -- Gameplay and Rulings
+    mana_cost VARCHAR(100),
+    cmc NUMERIC(12, 2),
+    type_line VARCHAR(255),
+    oracle_text TEXT,
+    colors VARCHAR(5)[],
+    color_identity VARCHAR(5)[],
+    keywords TEXT[],
+    produced_mana VARCHAR(5)[],
+
+    -- Combat Attributes
+    power VARCHAR(30),
+    toughness VARCHAR(30),
+    loyalty VARCHAR(30),
+    defense VARCHAR(30),
+
+    -- Flags
+    reserved BOOLEAN,
+    digital BOOLEAN,
+    reprint BOOLEAN,
+
+    -- Collection
+    set_code VARCHAR(10),
+    set_name VARCHAR(255),
+    collector_number VARCHAR(20),
+    rarity VARCHAR(20),
+    flavor_text TEXT,
+    artist VARCHAR(255),
+    released_at DATE,
+
+    -- Semistructured Data
+    legalities JSONB,
+    image_uris JSONB,
+    prices JSONB,
+    related_uris JSONB,
+    all_parts JSONB,
+    context_text TEXT,
+
+    PRIMARY KEY (import_id, id)
+);
+
+-- 7. Card Faces Staging Table
+CREATE UNLOGGED TABLE IF NOT EXISTS card_faces_staging (
+    import_id UUID NOT NULL,
+    card_id UUID NOT NULL,
+    face_index SMALLINT NOT NULL,
+
+    name VARCHAR(255) NOT NULL,
+    oracle_id UUID,
+    mana_cost VARCHAR(100),
+    cmc NUMERIC(12, 2),
+    type_line VARCHAR(255),
+    oracle_text TEXT,
+    colors VARCHAR(5)[],
+
+    power VARCHAR(30),
+    toughness VARCHAR(30),
+    loyalty VARCHAR(30),
+    defense VARCHAR(30),
+
+    flavor_text TEXT,
+    artist VARCHAR(255),
+    image_uris JSONB,
+
+    -- Composite key avoids sequence overhead during bulk loading.
+    PRIMARY KEY (import_id, card_id, face_index)
+);
+
+
+-- 8. Semantic View
+CREATE OR REPLACE VIEW cards_semantic_v AS
+SELECT DISTINCT ON (oracle_id, lang)
+    oracle_id,
+    lang,
+    embedding
+FROM cards
+ORDER BY 
+    oracle_id, 
+    lang, 
+    CASE WHEN embedding IS NOT NULL THEN 0 ELSE 1 END;
 
 
 ------------------------------------------------------------------
 
 
--- 1. Índices B-Tree compostos com import_id
-CREATE INDEX IF NOT EXISTS idx_cards_import_oracle ON cards(import_id, oracle_id);
-CREATE INDEX IF NOT EXISTS idx_cards_import_name ON cards(import_id, name);
-CREATE INDEX IF NOT EXISTS idx_cards_import_cmc ON cards(import_id, cmc);
-CREATE INDEX IF NOT EXISTS idx_card_faces_import_oracle ON card_faces(import_id, oracle_id);
+-- 1. Indexes
+CREATE INDEX IF NOT EXISTS idx_cards_import_oracle ON cards(oracle_id);
+CREATE INDEX IF NOT EXISTS idx_cards_import_name ON cards(name);
+CREATE INDEX IF NOT EXISTS idx_cards_import_cmc ON cards(cmc);
+CREATE INDEX IF NOT EXISTS idx_card_faces_import_oracle ON card_faces(oracle_id);
 
--- 2. Índices GIN para Arrays e JSONB
+-- 2. GIN Indexes for Arrays and JSONB
 CREATE INDEX IF NOT EXISTS idx_cards_colors_gin ON cards USING GIN(colors);
 CREATE INDEX IF NOT EXISTS idx_cards_color_identity_gin ON cards USING GIN(color_identity);
 CREATE INDEX IF NOT EXISTS idx_cards_keywords_gin ON cards USING GIN(keywords);
 CREATE INDEX IF NOT EXISTS idx_cards_legalities_gin ON cards USING GIN(legalities);
 
--- 3. Índices GIN para busca aproximada por nome
+-- 3. GIN Indexes for Fuzzy Search by Name
 CREATE INDEX IF NOT EXISTS idx_cards_name_trgm
 ON cards USING GIN (lower(name) gin_trgm_ops);
 
 CREATE INDEX IF NOT EXISTS idx_card_faces_name_trgm
 ON card_faces USING GIN (lower(name) gin_trgm_ops);
 
--- 4. Índice HNSW para Busca Vetorial
--- HNSW aceita no máximo 2.000 dimensões para vector e 4.000 para halfvec.
--- A coluna permanece em precisão completa; somente o índice usa meia precisão.
+-- 4. HNSW Index for Vector Search
 CREATE INDEX IF NOT EXISTS idx_cards_embedding_hnsw 
 ON cards 
 USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)

@@ -1,15 +1,13 @@
 package com.pelia.mtgfinder.controller;
 
-import java.util.UUID;
-
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.pelia.mtgfinder.dto.EmbeddingResult;
 import com.pelia.mtgfinder.dto.ScryfallImportResponse;
 import com.pelia.mtgfinder.service.EmbeddingService;
-import com.pelia.mtgfinder.service.EmbeddingService.EmbeddingResult;
 import com.pelia.mtgfinder.service.ScryfallImportService;
 
 @RestController
@@ -31,10 +29,10 @@ public class ImportController {
     }
 
     @PostMapping("/embed")
-    public EmbeddingResult embed(@RequestParam UUID importId) {
-        System.out.println("Embedding data for import ID: " + importId);
-        EmbeddingResult result = embeddingService.embedImport(importId);
-        System.out.println("Embedding completed for import ID: " + importId + ". Result: " + result);
+    public EmbeddingResult embed() {
+        System.out.println("Embedding all cards without an embedding");
+        EmbeddingResult result = embeddingService.embedPendingCards();
+        System.out.println("Embedding completed. Result: " + result);
         return result;
     }
 

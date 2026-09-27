@@ -13,6 +13,8 @@ public record ScryfallImportResponse(
         OffsetDateTime scryfallUpdatedAt,
         ImportStatus status,
         Integer totalCards,
+        Integer createdCards,
+        Integer updatedCards,
         OffsetDateTime createdAt,
         OffsetDateTime activatedAt,
         List<ImportLogResponse> logs) {
@@ -24,6 +26,8 @@ public record ScryfallImportResponse(
                 bulkImport.getScryfallUpdatedAt(),
                 bulkImport.getStatus(),
                 bulkImport.getTotalCards(),
+                bulkImport.getCreatedCards(),
+                bulkImport.getUpdatedCards(),
                 bulkImport.getCreatedAt(),
                 bulkImport.getActivatedAt(),
                 logs);
