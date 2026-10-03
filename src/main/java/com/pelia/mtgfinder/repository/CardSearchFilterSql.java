@@ -4,57 +4,82 @@ package com.pelia.mtgfinder.repository;
 public final class CardSearchFilterSql {
     private CardSearchFilterSql() {}
 
+    // Convert lists to typed arrays so Hibernate binds each as one PostgreSQL array, including empty lists.
     public static final String PREDICATE = """
-            AND (CAST(:#{#filters.type()} AS text) IS NULL
-                 OR position(lower(CAST(:#{#filters.type()} AS text)) in lower(oracle.type_line)) > 0
-                 OR EXISTS (
-                     SELECT 1 FROM card_face face
-                     JOIN card_print card ON card.id = face.card_print_id
-                     WHERE card.card_identity_id = oracle.id
-                       AND position(lower(CAST(:#{#filters.type()} AS text)) in lower(face.type_line)) > 0))
-            AND (CAST(:#{#filters.keyword()} AS text) IS NULL OR EXISTS (
-                 SELECT 1 FROM unnest(oracle.keywords) keyword
-                 WHERE lower(keyword) = lower(CAST(:#{#filters.keyword()} AS text))))
-            AND (CAST(:#{#filters.colors()} AS text) IS NULL OR (
-                 SELECT CASE WHEN CAST(:#{#filters.colors()} AS text) = 'C'
-                     THEN cardinality(available.colors) = 0
-                     ELSE available.colors @> string_to_array(CAST(:#{#filters.colors()} AS text), ',') END
-                 FROM (SELECT COALESCE(oracle.colors, (
-                     SELECT array_remove(array_agg(DISTINCT color), NULL)
-                     FROM card_face face
-                     JOIN card_print card ON card.id = face.card_print_id
-                     LEFT JOIN LATERAL unnest(face.colors) color ON true
-                     WHERE card.card_identity_id = oracle.id AND face.colors IS NOT NULL)) AS colors) available))
-            AND (CAST(:#{#filters.colorIdentity()} AS text) IS NULL
-                 OR CASE WHEN CAST(:#{#filters.colorIdentity()} AS text) = 'C'
-                     THEN cardinality(oracle.color_identity) = 0
-                     ELSE oracle.color_identity @> string_to_array(CAST(:#{#filters.colorIdentity()} AS text), ',') END)
-            AND (CAST(:#{#filters.legalityFormat()} AS text) IS NULL
-                 OR oracle.legalities ->> CAST(:#{#filters.legalityFormat()} AS text)
-                     = CAST(:#{#filters.legalityStatus()} AS text))
-            AND (CAST(:#{#filters.cmc()} AS numeric) IS NULL OR oracle.cmc = CAST(:#{#filters.cmc()} AS numeric))
-            AND (CAST(:#{#filters.layout()} AS text) IS NULL
-                 OR lower(oracle.layout) = lower(CAST(:#{#filters.layout()} AS text)))
-            AND ((
-                 (CAST(:#{#filters.power()} AS text) IS NULL OR lower(oracle.power) = lower(CAST(:#{#filters.power()} AS text)))
-                 AND (CAST(:#{#filters.toughness()} AS text) IS NULL OR lower(oracle.toughness) = lower(CAST(:#{#filters.toughness()} AS text)))
-                 AND (CAST(:#{#filters.loyalty()} AS text) IS NULL OR lower(oracle.loyalty) = lower(CAST(:#{#filters.loyalty()} AS text)))
-                 ) OR EXISTS (
-                     SELECT 1 FROM card_face face
-                     JOIN card_print card ON card.id = face.card_print_id
-                     WHERE card.card_identity_id = oracle.id
-                       AND (CAST(:#{#filters.power()} AS text) IS NULL OR lower(face.power) = lower(CAST(:#{#filters.power()} AS text)))
-                       AND (CAST(:#{#filters.toughness()} AS text) IS NULL OR lower(face.toughness) = lower(CAST(:#{#filters.toughness()} AS text)))
-                       AND (CAST(:#{#filters.loyalty()} AS text) IS NULL OR lower(face.loyalty) = lower(CAST(:#{#filters.loyalty()} AS text)))))
             AND EXISTS (
-                 SELECT 1 FROM card_print card WHERE card.card_identity_id = oracle.id
-                   AND (CAST(:#{#filters.rarity()} AS text) IS NULL OR lower(card.rarity) = CAST(:#{#filters.rarity()} AS text))
-                   AND (CAST(:#{#filters.set()} AS text) IS NULL
-                        OR lower(card.set_code) = lower(CAST(:#{#filters.set()} AS text))
-                        OR position(lower(CAST(:#{#filters.set()} AS text)) in lower(card.set_name)) > 0)
-                   AND (CAST(:#{#filters.collection()} AS text) IS NULL
-                        OR lower(card.set_code) = lower(CAST(:#{#filters.collection()} AS text))
-                        OR position(lower(CAST(:#{#filters.collection()} AS text)) in lower(card.set_name)) > 0
-                        OR lower(card.collector_number) = lower(CAST(:#{#filters.collection()} AS text))))
+                SELECT 1 FROM (SELECT
+                    CAST(:#{#filters.type().toArray(new String[0])} AS text[]) AS types,
+                    CAST(:#{#filters.keyword().toArray(new String[0])} AS text[]) AS keywords,
+                    CAST(:#{#filters.colors().toArray(new String[0])} AS text[]) AS colors,
+                    CAST(:#{#filters.colorIdentity().toArray(new String[0])} AS text[]) AS color_identities,
+                    CAST(:#{#filters.legality().toArray(new String[0])} AS text[]) AS legalities,
+                    CAST(:#{#filters.rarity().toArray(new String[0])} AS text[]) AS rarities,
+                    CAST(:#{#filters.set().toArray(new String[0])} AS text[]) AS sets,
+                    CAST(:#{#filters.collection().toArray(new String[0])} AS text[]) AS collections,
+                    CAST(:#{#filters.cmc().toArray(new java.math.BigDecimal[0])} AS numeric[]) AS mana_values,
+                    CAST(:#{#filters.layout().toArray(new String[0])} AS text[]) AS layouts,
+                    CAST(:#{#filters.power().toArray(new String[0])} AS text[]) AS powers,
+                    CAST(:#{#filters.toughness().toArray(new String[0])} AS text[]) AS toughnesses,
+                    CAST(:#{#filters.loyalty().toArray(new String[0])} AS text[]) AS loyalties
+                ) filters
+                WHERE (cardinality(filters.types) = 0 OR EXISTS (
+                    SELECT 1 FROM unnest(filters.types) value
+                    WHERE position(lower(value) in lower(oracle.type_line)) > 0
+                       OR EXISTS (
+                           SELECT 1 FROM card_face face
+                           JOIN card_print card ON card.id = face.card_print_id
+                           WHERE card.card_identity_id = oracle.id
+                             AND position(lower(value) in lower(face.type_line)) > 0)))
+                AND (cardinality(filters.keywords) = 0 OR EXISTS (
+                    SELECT 1 FROM unnest(oracle.keywords) keyword
+                    WHERE lower(keyword) IN (SELECT lower(value) FROM unnest(filters.keywords) value)))
+                AND (cardinality(filters.colors) = 0 OR (
+                    SELECT CASE WHEN 'C' = ANY(filters.colors) THEN cardinality(available.colors) = 0
+                        ELSE available.colors @> filters.colors END
+                    FROM (SELECT COALESCE(oracle.colors, (
+                        SELECT array_remove(array_agg(DISTINCT color), NULL)
+                        FROM card_face face
+                        JOIN card_print card ON card.id = face.card_print_id
+                        LEFT JOIN LATERAL unnest(face.colors) color ON true
+                        WHERE card.card_identity_id = oracle.id AND face.colors IS NOT NULL)) AS colors) available))
+                AND (cardinality(filters.color_identities) = 0
+                    OR CASE WHEN 'C' = ANY(filters.color_identities) THEN cardinality(oracle.color_identity) = 0
+                        ELSE oracle.color_identity @> filters.color_identities END)
+                AND (cardinality(filters.legalities) = 0 OR EXISTS (
+                    SELECT 1 FROM unnest(filters.legalities) value
+                    WHERE oracle.legalities ->> split_part(value, ':', 1) = split_part(value, ':', 2)))
+                AND (cardinality(filters.mana_values) = 0 OR oracle.cmc = ANY(filters.mana_values))
+                AND (cardinality(filters.layouts) = 0
+                    OR lower(oracle.layout) IN (SELECT lower(value) FROM unnest(filters.layouts) value))
+                AND ((
+                    (cardinality(filters.powers) = 0
+                        OR lower(oracle.power) IN (SELECT lower(value) FROM unnest(filters.powers) value))
+                    AND (cardinality(filters.toughnesses) = 0
+                        OR lower(oracle.toughness) IN (SELECT lower(value) FROM unnest(filters.toughnesses) value))
+                    AND (cardinality(filters.loyalties) = 0
+                        OR lower(oracle.loyalty) IN (SELECT lower(value) FROM unnest(filters.loyalties) value))
+                    ) OR EXISTS (
+                        SELECT 1 FROM card_face face
+                        JOIN card_print card ON card.id = face.card_print_id
+                        WHERE card.card_identity_id = oracle.id
+                          AND (cardinality(filters.powers) = 0
+                              OR lower(face.power) IN (SELECT lower(value) FROM unnest(filters.powers) value))
+                          AND (cardinality(filters.toughnesses) = 0
+                              OR lower(face.toughness) IN (SELECT lower(value) FROM unnest(filters.toughnesses) value))
+                          AND (cardinality(filters.loyalties) = 0
+                              OR lower(face.loyalty) IN (SELECT lower(value) FROM unnest(filters.loyalties) value))))
+                AND EXISTS (
+                    SELECT 1 FROM card_print card WHERE card.card_identity_id = oracle.id
+                      AND (cardinality(filters.rarities) = 0 OR lower(card.rarity) = ANY(filters.rarities))
+                      AND (cardinality(filters.sets) = 0 OR EXISTS (
+                          SELECT 1 FROM unnest(filters.sets) value
+                          WHERE lower(card.set_code) = lower(value)
+                             OR position(lower(value) in lower(card.set_name)) > 0))
+                      AND (cardinality(filters.collections) = 0 OR EXISTS (
+                          SELECT 1 FROM unnest(filters.collections) value
+                          WHERE lower(card.set_code) = lower(value)
+                             OR position(lower(value) in lower(card.set_name)) > 0
+                             OR lower(card.collector_number) = lower(value))))
+            )
             """;
 }

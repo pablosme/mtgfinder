@@ -1,9 +1,9 @@
 package com.pelia.mtgfinder.controller;
 
 import java.util.UUID;
-import java.util.Map;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -36,16 +36,18 @@ public class CardController {
     }
 
     @GetMapping
-    public CardSearchResponse searchByName(@RequestParam String name, @RequestParam Map<String, String> parameters) {
+    public CardSearchResponse searchByName(@RequestParam String name, @RequestParam MultiValueMap<String, String> parameters) {
         if (name.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Name must not be blank");
         }
+
+        System.out.println(parameters);
 
         return cardSearchService.searchByName(name, CardSearchFilters.from(parameters));
     }
 
     @GetMapping("/fuzzy")
-    public CardSearchResponse searchByFuzzyName(@RequestParam String name, @RequestParam Map<String, String> parameters) {
+    public CardSearchResponse searchByFuzzyName(@RequestParam String name, @RequestParam MultiValueMap<String, String> parameters) {
         if (name.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Name must not be blank");
         }
@@ -54,7 +56,7 @@ public class CardController {
     }
 
     @GetMapping("/vector")
-    public CardSearchResponse searchByPrompt(@RequestParam String prompt, @RequestParam Map<String, String> parameters) {
+    public CardSearchResponse searchByPrompt(@RequestParam String prompt, @RequestParam MultiValueMap<String, String> parameters) {
         if (prompt.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Prompt must not be blank");
         return cardSearchService.searchByPrompt(prompt, CardSearchFilters.from(parameters));
     }
