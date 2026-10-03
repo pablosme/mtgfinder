@@ -3,6 +3,7 @@ package com.pelia.mtgfinder.dto;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -47,6 +48,9 @@ public record ScryfallCard(
 		Integer edhrecRank,
 		Integer pennyRank,
 		Boolean reserved,
+		Boolean gameChanger,
+		String resourceId,
+		OffsetDateTime imageUpdatedAt,
 		String power,
 		String toughness,
 		String loyalty,
@@ -74,7 +78,7 @@ public record ScryfallCard(
 		Boolean highresImage,
 		UUID illustrationId,
 		String imageStatus,
-		ImageUris imageUris,
+		Map<String, URI> imageUris,
 		Boolean oversized,
 		Prices prices,
 		Boolean promo,
@@ -115,7 +119,7 @@ public record ScryfallCard(
 			String flavorName,
 			String flavorText,
 			UUID illustrationId,
-			ImageUris imageUris,
+			Map<String, URI> imageUris,
 			String layout,
 			String loyalty,
 			String manaCost,
@@ -140,17 +144,6 @@ public record ScryfallCard(
 			String name,
 			String typeLine,
 			URI uri) {
-	}
-
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-	public record ImageUris(
-			URI small,
-			URI normal,
-			URI large,
-			URI png,
-			URI artCrop,
-			URI borderCrop) {
 	}
 
 	@JsonIgnoreProperties(ignoreUnknown = true)

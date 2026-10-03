@@ -88,7 +88,7 @@ public class ScryfallImportService {
         // Starts the cards stream and processes them in batches
         int totalCards = 0;
         try {
-            postgresBulkCopyService.prepareImport(bulkImport.getId());
+            postgresBulkCopyService.discardStagedImport(bulkImport.getId());
             try (Stream<ScryfallCard> cardStream = streamBulkCards(jsonlDownloadUri, bulkImport.getId())) {
                 int batchCount = 0;
                 List<ScryfallCard> cards = new ArrayList<>(bulkInsertBatchSize);

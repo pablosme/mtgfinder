@@ -11,43 +11,23 @@ import com.pelia.mtgfinder.model.Card;
 
 public interface CardRepository extends JpaRepository<Card, UUID> {
 
-	@Query(value = """
-			WITH pending_cards AS (
-				SELECT representative.id
-				FROM cards_semantic_v semantic
-				CROSS JOIN LATERAL (
-					SELECT card.id
-					FROM cards card
-					WHERE card.oracle_id = semantic.oracle_id
-					  AND card.lang = semantic.lang
-					ORDER BY card.id
-					LIMIT 1
-				) representative
-				WHERE semantic.embedding IS NULL
-				  AND semantic.oracle_id IS NOT NULL
+    @Query("select c from Card c join fetch c.oracle o where lower(o.name) like lower(concat('%', :name, '%'))")
+    List<Card> findByNameContainingIgnoreCase(@Param("name") String name);
 
-				UNION ALL
+    @Query("select c from Card c join fetch c.oracle o where o.oracleId = :oracleId")
+    List<Card> findByOracleId(@Param("oracleId") UUID oracleId);
 
-				SELECT card.id
-				FROM cards card
-				WHERE card.oracle_id IS NULL
-				  AND card.embedding IS NULL
-			), batch AS (
-				SELECT id
-				FROM pending_cards
-				ORDER BY id
-				LIMIT :batchSize
-			)
-			SELECT card.*
-			FROM cards card
-			JOIN batch ON batch.id = card.id
-			ORDER BY card.id
-			""", nativeQuery = true)
-	List<Card> findPendingEmbeddings(@Param("batchSize") int batchSize);
+    @Query("""
+            select c from Card c where c.cardIdentityId = :cardIdentityId
+            order by c.releasedAt desc nulls last, c.id
+            """)
+    List<Card> findByCardIdentityId(@Param("cardIdentityId") UUID cardIdentityId);
 
-	List<Card> findByImportId(UUID importId);
+    List<Card> findByImportId(UUID importId);
 
-	List<Card> findByImportIdAndNameContainingIgnoreCase(UUID importId, String name);
+    @Query("select c from Card c join fetch c.oracle o where c.importId = :importId and lower(o.name) like lower(concat('%', :name, '%'))")
+    List<Card> findByImportIdAndNameContainingIgnoreCase(@Param("importId") UUID importId, @Param("name") String name);
 
-	List<Card> findByOracleId(UUID oracleId);
+    List<Card> findBySetCodeIgnoreCase(String setCode);
+
 }

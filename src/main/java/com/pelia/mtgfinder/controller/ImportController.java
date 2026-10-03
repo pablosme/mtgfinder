@@ -30,7 +30,7 @@ public class ImportController {
 
     @PostMapping("/embed")
     public EmbeddingResult embed() {
-        System.out.println("Embedding all cards without an embedding");
+        System.out.println("Embedding missing or changed card groups");
         EmbeddingResult result = embeddingService.embedPendingCards();
         System.out.println("Embedding completed. Result: " + result);
         return result;

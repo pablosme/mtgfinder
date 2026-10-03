@@ -9,17 +9,17 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import com.pelia.mtgfinder.model.CardFace;
+import com.pelia.mtgfinder.model.CardFaceId;
 
-public interface CardFaceRepository extends JpaRepository<CardFace, Long> {
+public interface CardFaceRepository extends JpaRepository<CardFace, CardFaceId> {
 
-	List<CardFace> findByCardIdOrderByFaceIndex(UUID cardId);
+	List<CardFace> findByCardPrintIdOrderByFaceIndex(UUID cardId);
 
 	@Query(value = """
 			SELECT face.*
-			FROM card_faces face
-			JOIN cards card ON card.id = face.card_id
-			WHERE card.id IN (:cardIds)
-			ORDER BY face.card_id, face.face_index
+			FROM card_face face
+			WHERE face.card_print_id IN (:cardPrintIds)
+			ORDER BY face.card_print_id, face.face_index
 			""", nativeQuery = true)
-	List<CardFace> findForActiveCardsByCardIds(@Param("cardIds") Collection<UUID> cardIds);
+	List<CardFace> findByCardPrintIds(@Param("cardPrintIds") Collection<UUID> cardPrintIds);
 }

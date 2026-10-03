@@ -6,8 +6,8 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.pelia.mtgfinder.model.ActiveCard;
-import com.pelia.mtgfinder.repository.ActiveCardRepository;
+import com.pelia.mtgfinder.model.Card;
+import com.pelia.mtgfinder.repository.CardRepository;
 
 import jakarta.persistence.EntityNotFoundException;
 
@@ -15,30 +15,30 @@ import jakarta.persistence.EntityNotFoundException;
 @Transactional(readOnly = true)
 public class ActiveCardService {
 
-	private final ActiveCardRepository repository;
+	private final CardRepository repository;
 
-	public ActiveCardService(ActiveCardRepository repository) {
+	public ActiveCardService(CardRepository repository) {
 		this.repository = repository;
 	}
 
-	public List<ActiveCard> findAll() {
+	public List<Card> findAll() {
 		return repository.findAll();
 	}
 
-	public ActiveCard findById(UUID id) {
+	public Card findById(UUID id) {
 		return repository.findById(id)
 				.orElseThrow(() -> new EntityNotFoundException("Active card not found: " + id));
 	}
 
-	public List<ActiveCard> findByName(String name) {
+	public List<Card> findByName(String name) {
 		return repository.findByNameContainingIgnoreCase(name);
 	}
 
-	public List<ActiveCard> findByOracleId(UUID oracleId) {
+	public List<Card> findByOracleId(UUID oracleId) {
 		return repository.findByOracleId(oracleId);
 	}
 
-	public List<ActiveCard> findBySetCode(String setCode) {
+	public List<Card> findBySetCode(String setCode) {
 		return repository.findBySetCodeIgnoreCase(setCode);
 	}
 }
